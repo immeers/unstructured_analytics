@@ -1,0 +1,305 @@
+---
+title: "Homework 1"
+author: "Imogen Meers"
+format:
+  html:
+    toc: true
+    toc-location: left
+    self-contained: true
+jupyter: python3
+---
+
+Professional wrestling, while not everyone's cup of tea, is big business. What started as a carnival act has turned into a global entertainment industry. Netflix recently started showing Monday Night Raw, a program from the biggest North American wrestling company, WWE -- this deal is reportedly worth \$5 billion. Like any large entity, WWE is not without competition, drama, and scandal. 
+
+## General Tips
+
+This is very much a step-by-step process. Don't go crazy trying to get everything done with as few lines as possible. Read the documentation for the AlphaVantage api! Carefully explore the pages from cagematch. There isn't a need to get too fancy with anything here -- just go with simple function and all should be good. Don't print comments, but use normal text for explanations.
+
+## Step 1
+
+In the `calls` folder, you'll find 4 text files -- these are transcripts from quarterly earnings calls. Read those files in (glob.glob will be very helpful here), with appropriate column names for ticker, quarter, and year columns; this should be done within a single function. Perform any data cleaning that you find necessary. 
+
+```{python}
+import glob as glob
+import pandas as pd
+
+def read_transcripts():
+    file_paths = glob.glob("calls/*")
+    data = []
+    transcript_df = pd.DataFrame()
+
+    for f in file_paths:
+        table = pd.read_table(f)
+        
+        #get col headers
+        cols = f.split('/')[-1].split('_')
+        table['ticker'] = cols[0].split("\\")[1]
+        table['quarter'] = cols[1]
+        table['year'] = cols[2].split('.')[0]
+        
+        table.columns = ['transcript', 'ticker', 'quarter', 'year'] 
+        transcript_df = pd.concat([transcript_df, table], axis=0)
+    
+    return transcript_df
+
+transcript_df = read_transcripts()
+```
+
+## Step 2
+
+Use the AlphaVantage api to get daily stock prices for WWE and related tickers for the last 5 years -- pay attention to your data. You cannot use any AlphaVantage packages (i.e., you can only use requests to grab the data). Tell me about the general trend that you are seeing. I don't care which viz package you use, but plotly is solid and plotnine is good for ggplot2 users.
+
+```{python}
+import requests 
+import plotly.express as px
+
+tickers = transcript_df['ticker'].unique()
+
+fig1 = px.line()
+api_key = '8X2OSCRZS0DQ0C4L'
+for t in tickers:
+    # replace the "demo" apikey below with your own key from https://www.alphavantage.co/support/#api-key
+    url = 'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol='+ t + '&outputsize=full' +'&apikey=' + api_key
+    r = requests.get(url)
+    data = r.json()
+    daily = pd.DataFrame(data['Time Series (Daily)'])
+    daily = daily.T
+    daily = daily.reset_index()
+    daily.columns = ['date', 'open', 'high', 'low', 'close', 'volume']
+    daily['date'] = pd.to_datetime(daily['date'])
+    daily['close'] = pd.to_numeric(daily['close'])
+    daily = daily[daily['date'] >=  pd.Timestamp.now()- pd.DateOffset(years=5)] #filter to only last 5 years
+
+    #plot close and date using plotly
+    fig = px.line(daily, x='date', y='close', title='Close Price Over Time for ' +t )
+    fig.show()
+```
+
+Generally, all three of these stocks have been trending up over the last 5 years. Edr did have a large drop at the start of 2022 but has roughly grown back to that value.
+
+## Step 3
+
+Just like every other nerdy hobby, professional wrestling draws dedicated fans. Wrestling fans often go to cagematch.net to leave reviews for matches, shows, and wrestlers. The following link contains the top 100 matches on cagematch: https://www.cagematch.net/?id=111&view=statistics
+
+```{python}
+from bs4 import BeautifulSoup
+r = requests.get('https://www.cagematch.net/?id=111&view=statistics', 'html.parser')
+content = BeautifulSoup(r.content)
+```
+```{python}
+import re
+import math
+table = content.select('table', _class="TBase TableBorderColor")
+top100 = pd.DataFrame(pd.read_html(str(table))[0])
+top100.columns = top100.iloc[0]
+top100 = top100[1:]
+
+## Split wrestlers into two columns
+top100['Match fixture'] = top100['Match fixture'].apply(lambda x: re.sub(r'( vs. )|( & )|(, )', '|', x))
+split_wrestlers = top100['Match fixture'].str.split('|', expand=True)
+ 
+
+top100 = pd.concat([top100, split_wrestlers], axis=1)
+#WON
+newwon = []
+for row in top100['WON']:
+    if not(isinstance(row, str)):
+        newwon.append(None)
+    else:
+        stars = len(re.search(r'^\**', row).group())
+        if row[stars:] == '':
+            fraction = 0
+        else:
+            fraction = eval(row[stars:])
+        newwon.append(stars + fraction)
+
+top100['WON'] = newwon
+
+
+#Promotion
+t = BeautifulSoup(str(table[0]), "html.parser")
+promos = [img.get('alt') for img in t.find_all('img')] #name of promo is in th alt tag
+top100['Promotion'] = promos
+
+#Ratings
+top100['Rating'] = pd.to_numeric(top100['Rating'])
+```
+
+* What is the correlation between WON ratings and cagematch ratings?
+```{python}
+corr = px.scatter(top100, x='WON', y='Rating', title='WON rating vs Cagematch Rating')
+corr.show()
+top100['WON'].corr(top100['Rating'])
+```
+
+The correlation is weakly positive (0.35), as WON ratings increase, cagematch ratings also increase but there are some lower WON ratings with high cagematch ratings.
+
+** Which wrestler has the most matches in the top 100?
+```{python}
+for i in range(0,7):
+    df1 = top100[i].value_counts().to_frame().reset_index().rename(columns={i: 'Wrestler', 'count': 'count'+ str(i)})
+
+    if (i==0):
+        merged_df = df1
+    else:
+        merged_df = pd.merge(merged_df, df1, on='Wrestler', how='outer').fillna(0)
+
+merged_df['Total'] = merged_df.iloc[:, 1:8].sum(axis=1)
+top = merged_df.sort_values('Total', ascending=False)
+top[['Wrestler', 'Total']]
+```
+
+The wrestlers with the most matches in the top 100 are Kenta Kobashi and Kenny Omega with 15 matches.
+
+*** Which promotion has the most matches in the top 100? 
+```{python}
+top100['Promotion'].value_counts().head(1)
+```
+
+New Japan Pro Wrestling has the most matches in the top 100 with 34 matches.
+
+**** What is each promotion's average WON rating?
+```{python}
+#skip nans in mean
+top100.groupby('Promotion')['WON'].mean().sort_values(ascending=False)
+```
+
+***** Select any single match and get the comments and ratings for that match into a data frame.
+
+```{python}
+from playwright.async_api import async_playwright
+import atexit
+
+link = t.find_all('a')[1].get('href')
+
+pw = await async_playwright().start()
+browser = await pw.chromium.launch(headless=False)
+page = await browser.new_page()
+
+await page.goto('https://www.cagematch.net/' + link)
+
+await page.locator('#commentBox > div.Comments > div.CommentBoxAddendum > a').click() # make sure we load all the comments
+
+
+# Wait for the comment box to load
+await page.wait_for_selector('body > div:nth-child(3) > div.LayoutOptionsAndBody > div.LayoutBody')
+    
+
+comments_df = pd.DataFrame(columns = ['User','Rating', 'Comment'])
+df_list = []
+
+end = False
+i = 4
+while not end:
+    try:
+        c = await page.locator('body > div:nth-child(3) > div.LayoutOptionsAndBody > div.LayoutBody > div > div:nth-child('+str(i)+')').all_inner_texts()
+        c =c[0]
+    
+
+        user = re.match(r"(.*) wrote",c).group()
+        rating = re.search(r"\[\d{1,2}\.?\d?\]",c)
+
+        if (rating == None): #check if there is a rating
+            rating = None
+        else:
+            rating = rating.group()
+            rating = rating[1:len(rating)-1]
+
+        comment = re.search(r"\".*\"",c).group()
+
+        row = {'User': user[0:len(user)-6], 'Rating' : rating, 'Comment': comment[1:len(comment)-1]}
+        df_list.append(pd.DataFrame([row]))
+        i += 1
+    except:
+        
+        end = True
+    
+comments_df = pd.concat(df_list, ignore_index=True)
+
+await browser.close()
+await pw.stop()
+    
+    
+#clean up comments, some have a rating []
+comments_df['Comment'] = comments_df['Comment'].apply(lambda x: re.sub(r'\[.*\]', '', x))
+comments_df.head(10)
+```
+## Step 4
+
+You can't have matches without wrestlers. The following link contains the top 100 wrestlers, according to cagematch: https://www.cagematch.net/?id=2&view=statistics
+
+```{python}
+r = requests.get('https://www.cagematch.net/?id=2&view=statistics', 'html.parser')
+content = BeautifulSoup(r.content)
+table = content.select('table', _class="TBase TableBorderColor")
+t = BeautifulSoup(str(table[0]), "html.parser")
+
+a_tags = t.find_all('a')
+filtered = [a for a in a_tags if not a.find('img', alt=True)]
+href_links = [a['href'] for a in filtered]
+names = [a.text for a in filtered]
+matches_list = []
+matches_df = pd.DataFrame(columns = ['Wrestler', 'Matches', 'Win/Loss Ratio'])
+
+
+for i in range(0, len(href_links)-1):
+    r = requests.get('https://www.cagematch.net/' + href_links[i] +'&page=22')
+    content = BeautifulSoup(r.content)
+
+    num_matches = content.select('body > div:nth-child(3) > div.LayoutOptionsAndBody > div.LayoutBody > div > div.InformationBoxTable > div:nth-child(1) > div.InformationBoxContents')
+    num_matches = int(num_matches[0].text)
+
+    wins = content.select('body > div:nth-child(3) > div.LayoutOptionsAndBody > div.LayoutBody > div > div.InformationBoxTable > div:nth-child(2) > div.InformationBoxContents')
+    wins = wins[0].text
+    wins = int(re.search(r"^\w*", wins).group())
+
+    losses = content.select('body > div:nth-child(3) > div.LayoutOptionsAndBody > div.LayoutBody > div > div.InformationBoxTable > div:nth-child(3) > div.InformationBoxContents')
+    losses = losses[0].text
+    losses = int(re.search(r"^\w*", losses).group())
+
+    if (num_matches == 0):
+        ratio = 0
+    elif (losses == 0):
+        ratio = wins
+    else:
+        ratio = wins/losses
+
+    row = {'Wrestler' : names[i], 'Matches': num_matches, "Win/Loss" : ratio }
+    matches_list.append(pd.DataFrame([row]))
+
+matches_df = pd.concat(matches_list, ignore_index=True)
+
+```
+
+*** Of the top 100, who has wrestled the most matches?
+
+```{python}
+matches_df.sort_values('Matches', ascending=False)
+```
+
+Ric Flair has wrestled the most matches with 4,999 matches.
+
+***** Of the top 100, which wrestler has the best win/loss?
+
+```{python}
+matches_df.sort_values('Win/Loss', ascending=False)
+```
+
+Lou Thesz has the best win/loss ratio with 9.45.
+
+## Step 5
+
+With all of this work out of the way, we can start getting down to strategy.
+
+First, what talent should WWE pursue? Advise carefully.
+
+I would recommend that WWE pursues wrestlers from New Japan Pro Wrestling, as they have the most matches in the top 100, have a high average WON rating which means there is recognition amongst fans that these matches are good to watch and they have the third highest win/loss ratio meaning wrestlers from this promotion win often (5.4 wins per loss). This could help increase viewership and ratings for WWE, that seem to be dwindling in 2024.
+
+Second, reconcile what you found in steps 3 and 4 with Netflix's relationship with WWE. Use the data from the following page to help make your case: https://wrestlenomics.com/tv-ratings/
+
+WWE has divisions: Smackdown, NXT and Raw. Smackdown has been consistenly trending downwards, Raw is much more stable and NXT seems to be doing well in recent years. In order to keep profits high, WWE should focus on developing Raw and NXT as these are the most profitable. Of the matches in the top 100 that get the best ratings, there are some wrestlers that show up more than others. WWE should try to show these popular wrestlers such as Kenny Omega and Kenta Kobashi in prime time spots such Monday Night Raw to increase viewership.
+
+
+
+Third, do you have any further recommendations for WWE?
+Keep trying to acquire new and successful talent to keep viewers interested. WWE could try to acquire wrestlers that are outside of the top 100 that are young and have a high win/loss ratio with the hope you can get then for a lower price and they will become succesful.

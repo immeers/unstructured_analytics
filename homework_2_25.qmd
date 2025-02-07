@@ -1,0 +1,108 @@
+---
+title: "Homework 2"
+author: "Imogen Meers"
+format:
+  html:
+    toc: true
+    toc-location: left
+    self-contained: true
+jupyter: python3
+---
+
+## Task 1
+
+We are going to return to the table of the top 100 wrestlers: https://www.cagematch.net/?id=2&view=statistics. Specifically, you are going to get the ratings/comments tables for each wrestler.
+
+```{python}
+from playwright.async_api import async_playwright
+import atexit
+
+import pandas as pd
+import re
+import requests
+from bs4 import BeautifulSoup
+
+r = requests.get('https://www.cagematch.net/?id=2&view=statistics', 'html.parser')
+content = BeautifulSoup(r.content)
+table = content.select('table', _class="TBase TableBorderColor")
+t = BeautifulSoup(str(table[0]), "html.parser")
+
+a_tags = t.find_all('a')
+filtered = [a for a in a_tags if not a.find('img', alt=True)]
+href_links = [a['href'] for a in filtered]
+names = [a.text for a in filtered]
+
+pw = await async_playwright().start()
+browser = await pw.chromium.launch(headless=False)
+page = await browser.new_page()
+
+for j in range(len(href_links)):
+    url =  'https://www.cagematch.net/' + href_links[j] +'&page=99'
+
+    
+    await page.goto(url)
+        
+
+    comments_df = pd.DataFrame(columns = ['User','Rating', 'Comment'])
+    df_list = []
+
+    end = False
+    i = 4
+    while not end:
+        try:
+            c = await page.locator('body > div:nth-child(3) > div.LayoutOptionsAndBody > div.LayoutBody > div > div:nth-child('+str(i)+')').all_inner_texts()
+            c =c[0]
+        
+
+            user = re.match(r"(.*) wrote",c).group()
+            rating = re.search(r"\[\d{1,2}\.?\d?\]",c)
+
+            if (rating == None): #check if there is a rating
+                rating = None
+            else:
+                rating = rating.group()
+                rating = rating[1:len(rating)-1]
+
+            comment = re.search(r"\".*\"",c).group()
+
+            row = {'User': user[0:len(user)-6], 'Rating' : rating, 'Comment': comment[1:len(comment)-1]}
+            df_list.append(pd.DataFrame([row]))
+            i += 1
+        except:
+            
+            end = True
+        
+    comments_df = pd.concat(df_list, ignore_index=True)
+
+    
+        
+        
+    #clean up comments, some have a rating []
+    comments_df['Comment'] = comments_df['Comment'].apply(lambda x: re.sub(r'\[.*\]', '', x))
+    comments_df['Name'] = names[j]
+
+    if j == 0 :
+        combined_df = comments_df
+    else:
+      combined_df = pd.concat([combined_df, comments_df], axis=0, ignore_index=True)
+    
+    comments_df = pd.DataFrame()
+  
+
+await browser.close()
+await pw.stop()
+
+```
+
+
+So I don't have to run it next time
+```{python}
+combined_df.to_csv('top100_comments.csv', index=False)
+```
+## Task 2
+
+Perform any form of sentiment analysis. What is the relationship between a reviewer's sentiment and their rating?
+
+## Task 3
+
+Perform any type of topic modeling on the comments. What are the main topics of the comments? How can you use those topics to understand what people value?
